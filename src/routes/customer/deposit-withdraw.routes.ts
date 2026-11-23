@@ -24,7 +24,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 });
 
 // ─── POST /api/customer/deposit-withdraw ─────────────────────────────────────
-// Submit a deposit or withdrawal request (simulated approval workflow)
+// Submit deposit or withdrawal request (simulated approval workflow)
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   try {
     const email = req.user!.email.toLowerCase();
@@ -42,7 +42,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
     const reqAmount = Number(amount);
     if (isNaN(reqAmount) || reqAmount <= 0) {
-      res.status(400).json({ error: 'Invalid amount.' });
+      res.status(400).json({ error: 'Invalid amount. Must be greater than 0.' });
       return;
     }
 
@@ -58,7 +58,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
     if (account.status !== 'Active') {
-      res.status(400).json({ error: `Account is ${account.status}.` });
+      res.status(400).json({ error: `Account is ${account.status}. Transactions cannot be processed.` });
       return;
     }
 
@@ -67,7 +67,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       const minBalance = account.minBalance ?? 50;
       if (account.balance - reqAmount < minBalance) {
         res.status(400).json({
-          error: `Insufficient balance. Minimum balance of $${minBalance} must be maintained.`,
+          error: `Insufficient balance. A minimum reserve balance of $${minBalance.toFixed(2)} must be maintained. Available: $${account.balance.toFixed(2)}.`,
         });
         return;
       }
@@ -76,7 +76,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     const requestId = 'REQ-' + Math.random().toString(36).substring(2, 8).toUpperCase();
     const now = new Date();
 
-    // Simulate auto-approval for small amounts (≤500), Pending for larger amounts
+    // Auto-approve amounts <= $500 for smooth simulation testing; larger amounts require Admin approval
     const autoApprove = reqAmount <= 500;
     const status = autoApprove ? 'Approved' : 'Pending';
 
@@ -95,7 +95,6 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
     await db.collection('deposit_withdraw_requests').insertOne(requestDoc);
 
-    // If auto-approved, update account balance and create transaction
     if (autoApprove) {
       const balanceDelta = type === 'Deposit' ? reqAmount : -reqAmount;
       await bankAccountsCol.updateOne(
@@ -118,10 +117,28 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
         amount: reqAmount,
         fee: 0,
         status: 'Completed',
-        description: description || `${type} - Auto Approved`,
+        description: description || `${type} - Instant Simulated Approval`,
         relatedRequestId: requestId,
         createdAt: now,
         updatedAt: now,
+      });
+
+      await db.collection('notifications').insertOne({
+        userEmail: email,
+        title: `${type} Approved`,
+        message: `Your ${type} of $${reqAmount.toFixed(2)} for account ${accountNumber} has been instantly cleared and updated.`,
+        type: 'Transaction',
+        read: false,
+        createdAt: now,
+      });
+    } else {
+      await db.collection('notifications').insertOne({
+        userEmail: email,
+        title: `${type} Request Under Review`,
+        message: `Your ${type} request of $${reqAmount.toFixed(2)} on account ${accountNumber} has been submitted (ID: ${requestId}). Awaiting staff/admin approval.`,
+        type: 'Transaction',
+        read: false,
+        createdAt: now,
       });
     }
 
@@ -130,8 +147,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       requestId,
       status,
       message: autoApprove
-        ? `${type} of $${reqAmount} approved instantly.`
-        : `${type} request submitted. Awaiting admin approval.`,
+        ? `${type} of $${reqAmount.toFixed(2)} approved instantly.`
+        : `${type} request of $${reqAmount.toFixed(2)} submitted. Awaiting bank staff/admin review.`,
     });
   } catch (err) {
     console.error('[DepositWithdraw/POST]', err);

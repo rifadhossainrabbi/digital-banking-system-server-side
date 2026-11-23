@@ -9,6 +9,7 @@ import depositWithdrawRouter from './customer/deposit-withdraw.routes';
 import loansRouter from './customer/loans.routes';
 import statementRouter from './customer/statement.routes';
 import profileRouter from './customer/profile.routes';
+import notificationsRouter from './customer/notifications.routes';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/deposit-withdraw', depositWithdrawRouter);
 router.use('/loans', loansRouter);
 router.use('/statement', statementRouter);
 router.use('/profile', profileRouter);
+router.use('/notifications', notificationsRouter);
 
 export default router;

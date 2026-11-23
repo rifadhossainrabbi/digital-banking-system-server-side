@@ -24,7 +24,9 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 });
 
 // ─── POST /api/customer/loans ─────────────────────────────────────────────────
-// Apply for a new loan (disbursed instantly if approved by system)
+// Apply for a loan:
+// - Micro-loans (<= $1,000) are auto-approved & disbursed immediately.
+// - Larger loans (> $1,000) enter 'Pending' state for Staff/Admin review and approval.
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   try {
     const email = req.user!.email.toLowerCase();
@@ -39,16 +41,16 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     } = req.body;
 
     if (!accountNumber || !loanType || !requestedAmount || !durationMonths) {
-      res.status(400).json({ error: 'Missing required loan fields.' });
+      res.status(400).json({ error: 'Missing required loan fields (accountNumber, loanType, requestedAmount, durationMonths).' });
       return;
     }
 
     const amount = Number(requestedAmount);
     const months = Number(durationMonths);
-    const income = Number(monthlyIncome);
+    const income = Number(monthlyIncome) || 0;
 
     if (isNaN(amount) || amount <= 0) {
-      res.status(400).json({ error: 'Invalid loan amount.' });
+      res.status(400).json({ error: 'Invalid loan amount. Must be greater than 0.' });
       return;
     }
     if (isNaN(months) || months < 3 || months > 60) {
@@ -62,15 +64,15 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       .findOne({ accountNumber, userEmail: email });
 
     if (!account) {
-      res.status(404).json({ error: 'Account not found or unauthorized.' });
+      res.status(404).json({ error: 'Target account not found or unauthorized.' });
       return;
     }
     if (account.status !== 'Active') {
-      res.status(400).json({ error: `Account is ${account.status}.` });
+      res.status(400).json({ error: `Account is ${account.status}. Cannot receive loan disbursements.` });
       return;
     }
 
-    // Check no existing active/pending loan for this customer (simple policy)
+    // Check no duplicate active/pending loan for this customer
     const activeLoan = await db.collection('loans').findOne({
       userEmail: email,
       status: { $in: ['Active', 'Pending', 'Under Review'] },
@@ -78,7 +80,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     if (activeLoan) {
       res
         .status(400)
-        .json({ error: 'You already have an active or pending loan application.' });
+        .json({ error: `You already have an existing ${activeLoan.status.toLowerCase()} loan (${activeLoan.loanId}). Multiple concurrent applications are restricted.` });
       return;
     }
 
@@ -95,7 +97,10 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     const user = await db.collection('users').findOne({ email });
     const now = new Date();
 
-    // Instant disburse (simulate admin auto-approval)
+    // Auto-approve micro loans (<= $1,000) for instant simulation; larger loans require Admin approval
+    const isAutoApproved = amount <= 1000;
+    const initialStatus = isAutoApproved ? 'Active' : 'Pending';
+
     const loanDoc = {
       loanId,
       userId: req.user!.userId,
@@ -110,49 +115,72 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       monthlyIncome: income,
       employmentStatus: employmentStatus || 'Employed',
       description: description || '',
-      status: 'Active',
-      remainingBalance: amount,
+      status: initialStatus,
+      remainingBalance: isAutoApproved ? amount : 0,
       paidAmount: 0,
       repayments: [],
-      approvedAt: now,
-      disbursedAt: now,
+      approvedAt: isAutoApproved ? now : null,
+      disbursedAt: isAutoApproved ? now : null,
       createdAt: now,
       updatedAt: now,
     };
 
     await db.collection('loans').insertOne(loanDoc);
 
-    // Disburse loan amount to account
-    await db.collection('bank_accounts').updateOne(
-      { accountNumber },
-      { $inc: { balance: amount }, $set: { updatedAt: now } }
-    );
+    if (isAutoApproved) {
+      // Disburse loan amount to account immediately
+      await db.collection('bank_accounts').updateOne(
+        { accountNumber },
+        { $inc: { balance: amount }, $set: { updatedAt: now } }
+      );
 
-    // Record disbursement transaction
-    const txnId = 'TXN-' + Math.random().toString(36).substring(2, 9).toUpperCase();
-    await db.collection('transactions').insertOne({
-      transactionId: txnId,
-      senderAccount: 'SYSTEM',
-      senderName: 'Vaultly Loan Department',
-      senderEmail: 'loans@vaultly.bank',
-      receiverAccount: accountNumber,
-      receiverName: user?.name || 'Customer',
-      receiverEmail: email,
-      type: 'Loan Disbursement',
-      amount,
-      fee: 0,
-      status: 'Completed',
-      description: `${loanType} Disbursement — Loan ID: ${loanId}`,
-      relatedLoanId: loanId,
-      createdAt: now,
-      updatedAt: now,
-    });
+      // Record disbursement transaction
+      const txnId = 'TXN-' + Math.random().toString(36).substring(2, 9).toUpperCase();
+      await db.collection('transactions').insertOne({
+        transactionId: txnId,
+        senderAccount: 'SYSTEM',
+        senderName: 'Vaultly Loan Department',
+        senderEmail: 'loans@vaultly.bank',
+        receiverAccount: accountNumber,
+        receiverName: user?.name || 'Customer',
+        receiverEmail: email,
+        type: 'Loan Disbursement',
+        amount,
+        fee: 0,
+        status: 'Completed',
+        description: `${loanType} Instant Micro-Disbursement — Loan ID: ${loanId}`,
+        relatedLoanId: loanId,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      await db.collection('notifications').insertOne({
+        userEmail: email,
+        title: 'Micro-Loan Approved & Disbursed',
+        message: `Your micro-loan of $${amount} was approved and disbursed into account ${accountNumber}.`,
+        type: 'Loan',
+        read: false,
+        createdAt: now,
+      });
+    } else {
+      await db.collection('notifications').insertOne({
+        userEmail: email,
+        title: 'Loan Application Submitted',
+        message: `Your application for a ${loanType} of $${amount} has been received (Loan ID: ${loanId}). It is under staff & admin review.`,
+        type: 'Loan',
+        read: false,
+        createdAt: now,
+      });
+    }
 
     res.status(201).json({
       success: true,
       loanId,
+      status: initialStatus,
       monthlyInstallment: parseFloat(monthlyInstallment.toFixed(2)),
-      message: `Loan of $${amount} approved and disbursed to account ${accountNumber}.`,
+      message: isAutoApproved
+        ? `Instant loan of $${amount} approved and credited to account ${accountNumber}.`
+        : `Loan application for $${amount} submitted successfully. Status: Pending Admin Review.`,
     });
   } catch (err) {
     console.error('[Loans/POST]', err);
@@ -182,7 +210,7 @@ router.get('/:loanId', async (req: Request, res: Response): Promise<void> => {
 });
 
 // ─── POST /api/customer/loans/:loanId/repay ───────────────────────────────────
-// Pay one installment from an account balance
+// Pay installment from account balance
 router.post('/:loanId/repay', async (req: Request, res: Response): Promise<void> => {
   try {
     const email = req.user!.email.toLowerCase();
@@ -210,7 +238,7 @@ router.post('/:loanId/repay', async (req: Request, res: Response): Promise<void>
       return;
     }
     if (loan.status !== 'Active') {
-      res.status(400).json({ error: `Loan is ${loan.status}.` });
+      res.status(400).json({ error: `Loan is ${loan.status}. Only Active loans can be repaid.` });
       return;
     }
 
@@ -223,7 +251,7 @@ router.post('/:loanId/repay', async (req: Request, res: Response): Promise<void>
     const minBalance = account.minBalance ?? 50;
     if (account.balance - repayAmount < minBalance) {
       res.status(400).json({
-        error: `Insufficient balance. Minimum balance of $${minBalance} must be maintained.`,
+        error: `Insufficient balance. A minimum reserve balance of $${minBalance.toFixed(2)} must remain.`,
       });
       return;
     }
@@ -231,7 +259,7 @@ router.post('/:loanId/repay', async (req: Request, res: Response): Promise<void>
     const now = new Date();
     const paymentId = 'PAY-' + Math.random().toString(36).substring(2, 6).toUpperCase();
     const newRemaining = Math.max(0, loan.remainingBalance - repayAmount);
-    const newPaid = loan.paidAmount + repayAmount;
+    const newPaid = (loan.paidAmount || 0) + repayAmount;
     const newStatus = newRemaining === 0 ? 'Completed' : 'Active';
 
     const repaymentEntry = {
@@ -283,6 +311,19 @@ router.post('/:loanId/repay', async (req: Request, res: Response): Promise<void>
       updatedAt: now,
     });
 
+    // Notify customer
+    await db.collection('notifications').insertOne({
+      userEmail: email,
+      title: newStatus === 'Completed' ? 'Loan Fully Paid Off!' : 'Loan Payment Recorded',
+      message:
+        newStatus === 'Completed'
+          ? `Congratulations! Loan ${loanId} has been paid in full.`
+          : `Payment of $${repayAmount.toFixed(2)} recorded for Loan ${loanId}. Remaining balance: $${newRemaining.toFixed(2)}.`,
+      type: 'Loan',
+      read: false,
+      createdAt: now,
+    });
+
     res.json({
       success: true,
       paymentId,
@@ -292,7 +333,7 @@ router.post('/:loanId/repay', async (req: Request, res: Response): Promise<void>
       message:
         newStatus === 'Completed'
           ? `🎉 Loan ${loanId} fully repaid!`
-          : `Payment of $${repayAmount} recorded. Remaining: $${newRemaining.toFixed(2)}.`,
+          : `Payment of $${repayAmount.toFixed(2)} recorded. Remaining: $${newRemaining.toFixed(2)}.`,
     });
   } catch (err) {
     console.error('[Loans/Repay]', err);

@@ -4,20 +4,23 @@ import { getDB } from '../../lib/db';
 const router = Router();
 
 // ─── GET /api/customer/transactions ──────────────────────────────────────────
-// Paginated, searchable, filterable transaction history for the logged-in customer
+// Paginated, searchable, date-filterable transaction history for current customer
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
     const email = req.user!.email.toLowerCase();
     const {
       account = 'All',
       type = 'All',
+      status = 'All',
+      startDate,
+      endDate,
       search = '',
       page = '1',
       limit = '10',
     } = req.query as Record<string, string>;
 
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
     const db = await getDB();
@@ -51,6 +54,16 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 
     if (type !== 'All') {
       query.type = type;
+    }
+
+    if (status !== 'All') {
+      query.status = status;
+    }
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
     if (search.trim()) {
@@ -115,7 +128,7 @@ router.get('/:txnId', async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!txn) {
-      res.status(404).json({ error: 'Transaction not found.' });
+      res.status(404).json({ error: 'Transaction not found or unauthorized.' });
       return;
     }
 
