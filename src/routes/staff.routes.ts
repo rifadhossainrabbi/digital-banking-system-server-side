@@ -6,6 +6,60 @@ const router = Router();
 router.use(authenticate);
 router.use(authorize('Bank Staff', 'Admin'));
 
+// ─── 0. Staff Dashboard Overview ──────────────────────────────────────────────
+router.get('/dashboard-overview', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const db = await getDB();
+    const [
+      totalCustomers,
+      totalAccounts,
+      pendingLoans,
+      pendingTransactions,
+      flaggedTransactions,
+      unverifiedCustomers,
+    ] = await Promise.all([
+      db.collection('users').countDocuments({ role: 'Customer' }),
+      db.collection('bank_accounts').countDocuments({ status: 'Active' }),
+      db.collection('loans').countDocuments({ status: { $in: ['Pending', 'Under Review'] } }),
+      db.collection('transactions').countDocuments({ status: 'Pending' }),
+      db.collection('transactions').countDocuments({ isSuspicious: true }),
+      db.collection('users').countDocuments({ role: 'Customer', kycVerified: { $ne: true } }),
+    ]);
+
+    const recentTransactions = await db
+      .collection('transactions')
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .toArray();
+
+    const pendingLoanList = await db
+      .collection('loans')
+      .find({ status: { $in: ['Pending', 'Under Review'] } })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .toArray();
+
+    res.json({
+      metrics: {
+        totalCustomers,
+        totalAccounts,
+        pendingLoans,
+        pendingTransactions,
+        flaggedTransactions,
+        unverifiedCustomers,
+        branchCode: 'VLT-NYC-01',
+        branchName: 'New York Metro Branch',
+      },
+      recentTransactions,
+      pendingLoanList,
+    });
+  } catch (err) {
+    console.error('[Staff/DashboardOverview]', err);
+    res.status(500).json({ error: 'Failed to retrieve staff dashboard overview.' });
+  }
+});
+
 // ─── 1. Customer Operations ──────────────────────────────────────────────────
 // List all customers
 router.get('/customers', async (req: Request, res: Response): Promise<void> => {
