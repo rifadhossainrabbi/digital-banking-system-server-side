@@ -25,7 +25,9 @@ export async function authenticate(
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Unauthorized: missing token.' });
+      res.status(401).json({
+        error: 'Unauthorized: Authentication required. Please log in.',
+      });
       return;
     }
 
@@ -35,25 +37,31 @@ export async function authenticate(
 
     const payload = jwt.verify(token, secret) as JwtPayload;
 
-    // Confirm user still exists and is active
+    // Confirm user still exists and is active in database
     const db = await getDB();
     const user = await db
       .collection('users')
       .findOne({ email: payload.email.toLowerCase() });
 
     if (!user) {
-      res.status(401).json({ error: 'Unauthorized: user not found.' });
+      res.status(401).json({
+        error: 'Unauthorized: User account not found or was removed.',
+      });
       return;
     }
     if (user.status !== 'Active') {
-      res.status(403).json({ error: 'Account is suspended or inactive.' });
+      res.status(403).json({
+        error: `Forbidden: Account is ${user.status}. Please contact bank administration.`,
+      });
       return;
     }
 
     req.user = payload;
     next();
   } catch {
-    res.status(401).json({ error: 'Unauthorized: invalid or expired token.' });
+    res.status(401).json({
+      error: 'Unauthorized: Invalid or expired session token. Please log in again.',
+    });
   }
 }
 
@@ -61,7 +69,9 @@ export async function authenticate(
 export function authorize(...roles: JwtPayload['role'][]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {
-      res.status(403).json({ error: 'Forbidden: insufficient permissions.' });
+      res.status(403).json({
+        error: `Forbidden: Access requires one of the following roles: ${roles.join(', ')}.`,
+      });
       return;
     }
     next();
