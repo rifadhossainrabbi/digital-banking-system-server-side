@@ -69,12 +69,15 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 // ─── POST /api/auth/register ─────────────────────────────────────────────────
 router.post('/register', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, email, password, phone, transactionPin } = req.body;
+    const { name, email, password, phone, transactionPin, accountType = 'Savings Account' } = req.body;
 
     if (!name || !email || !password) {
       res.status(400).json({ error: 'Name, email, and password are required.' });
       return;
     }
+
+    const validAccountTypes = ['Savings Account', 'Current Account', 'Business Account'];
+    const chosenType = validAccountTypes.includes(accountType) ? accountType : 'Savings Account';
 
     const db = await getDB();
     const existing = await db
@@ -104,8 +107,31 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
       password: hashedPassword,
       transactionPin: hashedPin,
       role: 'Customer',
+      accountType: chosenType,
       status: 'Active',
       phone: phone || null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const newUserId = result.insertedId.toString();
+    const accountNumber = '10' + Math.floor(10000000 + Math.random() * 90000000);
+    const limits =
+      chosenType === 'Business Account'
+        ? { dailyLimit: 50000, maxSingleTransaction: 20000, minBalance: 500 }
+        : chosenType === 'Current Account'
+        ? { dailyLimit: 15000, maxSingleTransaction: 5000, minBalance: 100 }
+        : { dailyLimit: 5000, maxSingleTransaction: 2000, minBalance: 50 };
+
+    await db.collection('bank_accounts').insertOne({
+      userId: newUserId,
+      userEmail: email.toLowerCase().trim(),
+      userName: name.trim(),
+      accountNumber,
+      accountType: chosenType,
+      balance: 1000.0,
+      status: 'Active',
+      ...limits,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -113,7 +139,9 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     res.status(201).json({
       success: true,
       message: 'Registration successful.',
-      userId: result.insertedId.toString(),
+      userId: newUserId,
+      accountNumber,
+      accountType: chosenType,
     });
   } catch (err) {
     console.error('[Auth/Register]', err);
