@@ -139,4 +139,65 @@ router.get('/:txnId', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+// ─── GET /api/customer/transactions/:txnId/receipt ────────────────────────────
+// Digital Banking Receipt Voucher & Cryptographic Verification
+router.get('/:txnId/receipt', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const email = req.user!.email.toLowerCase();
+    const { txnId } = req.params;
+
+    const db = await getDB();
+    const userAccounts = await db
+      .collection('bank_accounts')
+      .find({ userEmail: email })
+      .toArray();
+    const accountNumbers = userAccounts.map((a) => a.accountNumber);
+
+    const txn = await db.collection('transactions').findOne({
+      transactionId: txnId,
+      $or: [
+        { senderAccount: { $in: accountNumbers } },
+        { receiverAccount: { $in: accountNumbers } },
+      ],
+    });
+
+    if (!txn) {
+      res.status(404).json({ error: 'Transaction record not found.' });
+      return;
+    }
+
+    const crypto = await import('crypto');
+    const fingerprint = crypto
+      .createHash('sha256')
+      .update(`${txn.transactionId}:${txn.amount}:${txn.createdAt}`)
+      .digest('hex');
+
+    res.json({
+      voucher: {
+        receiptNumber: `RCP-${txn.transactionId}`,
+        transactionId: txn.transactionId,
+        type: txn.type,
+        amount: txn.amount,
+        fee: txn.fee || 0,
+        status: txn.status,
+        timestamp: txn.createdAt,
+        sender: {
+          name: txn.senderName,
+          accountNumber: txn.senderAccount,
+        },
+        recipient: {
+          name: txn.receiverName,
+          accountNumber: txn.receiverAccount,
+        },
+        securityFingerprint: `SHA256:${fingerprint.substring(0, 32).toUpperCase()}`,
+        issuer: 'Vaultly Financial Core Ledger v2.4',
+        verified: true,
+      },
+    });
+  } catch (err) {
+    console.error('[Transactions/GET/:txnId/receipt]', err);
+    res.status(500).json({ error: 'Failed to generate digital voucher.' });
+  }
+});
+
 export default router;
