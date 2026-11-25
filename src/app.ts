@@ -4,6 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
+import { sanitizeInputs, attachBankingSecurityHeaders } from './middleware/security.middleware';
 
 // Lazy-loaded routers — imported only when needed
 import authRoutes from './routes/auth.routes';
@@ -15,6 +16,7 @@ const app = express();
 
 // ─── Security Middleware ────────────────────────────────────────────────────
 app.use(helmet());
+app.use(attachBankingSecurityHeaders);
 
 app.use(
   cors({
@@ -45,6 +47,7 @@ const authLimiter = rateLimit({
 // ─── Body Parsing ───────────────────────────────────────────────────────────
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(sanitizeInputs);
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
